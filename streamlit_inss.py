@@ -9,26 +9,50 @@ Original file is located at
 
 #===================================================Código para subir Streamlit =========================================#
 
+# streamlit_app.py
+
 import streamlit as st
 import pandas as pd
 
-# Carregar os dados
-st.title("Painel de Análise de INSS - Médicos")
+st.set_page_config(page_title="Análise INSS - Médicos", layout="wide")
 
-df = pd.read_csv("saida_unificada.csv")
+st.title("📊 Painel de Análise de INSS - Médicos")
 
-# Tratamento básico
-df.columns = df.columns.str.strip()
-df = df.fillna("")
+# Carregar dados principais
+df_cadastro = pd.read_csv("saida_unificada.csv")
+df_cadastro.columns = df_cadastro.columns.str.strip()
+df_cadastro = df_cadastro.fillna("")
 
-# Sidebar com filtros
-st.sidebar.header("Filtros")
-status_opcao = st.sidebar.multiselect("Status", options=df['STATUS'].unique(), default=df['STATUS'].unique())
-hospital_cols = ['OMED', 'HMB', 'HGP', 'PEDRE', 'REDE HC', 'AME CARAP', 'H MULHER', 'HU SBC', 'M BOI', 'AME ITAP', 'H TIRADENTES', 'H ITAIM', 'AME PRADOS']
-hospital_opcao = st.sidebar.multiselect("Hospitais", options=hospital_cols, default=hospital_cols)
+# Carregar dados de recebimento (se existir)
+try:
+    df_receb = pd.read_csv("recebimentos.csv")
+    df_receb.columns = df_receb.columns.str.strip()
+    df_receb = df_receb.fillna("")
+    # Tentativa de merge
+    df = pd.merge(df_cadastro, df_receb, how='left', on=["CRM", "NOME"])
+    st.success("✅ Dados de recebimento integrados com sucesso.")
+except FileNotFoundError:
+    df = df_cadastro.copy()
+    st.warning("⚠️ Arquivo de recebimentos não encontrado. Mostrando apenas dados cadastrais.")
+
+# Filtros na barra lateral
+st.sidebar.header("🔍 Filtros")
+
+status_opcao = st.sidebar.multiselect(
+    "Status do Cadastro", options=df['STATUS'].unique(), default=df['STATUS'].unique()
+)
+
+hospital_cols = [
+    'OMED', 'HMB', 'HGP', 'PEDRE', 'REDE HC', 'AME CARAP', 'H MULHER', 'HU SBC',
+    'M BOI', 'AME ITAP', 'H TIRADENTES', 'H ITAIM', 'AME PRADOS'
+]
+hospital_opcao = st.sidebar.multiselect(
+    "Hospitais", options=hospital_cols, default=hospital_cols
+)
+
 filtro_inss = st.sidebar.radio("Paga INSS?", options=["Todos", "Sim", "Não"])
 
-# Filtros aplicados
+# Aplicar filtros
 df_filtrado = df[df['STATUS'].isin(status_opcao)]
 
 if filtro_inss == "Sim":
@@ -36,27 +60,46 @@ if filtro_inss == "Sim":
 elif filtro_inss == "Não":
     df_filtrado = df_filtrado[df_filtrado['INSS'] == "N"]
 
-# Mostrar resultado
-st.subheader("Tabela Filtrada")
-st.dataframe(df_filtrado)
+# Filtrar por hospitais (pelo menos 1 marcado como 'S')
+df_filtrado = df_filtrado[df_filtrado[hospital_opcao].eq("S").any(axis=1)]
 
-# Contagem por hospital
-st.subheader("Contagem por Hospital (Ativos)")
-df_hospital = df[df['STATUS'] == 'ATIVO']
-contagem_hospitais = {col: (df_hospital[col] == 'S').sum() for col in hospital_cols}
+# Seção principal: Tabela Filtrada
+st.subheader("📄 Tabela Filtrada")
+st.dataframe(df_filtrado, use_container_width=True)
+
+# Contagem por hospital (Apenas ativos)
+st.subheader("🏥 Contagem por Hospital (Apenas Ativos)")
+df_ativos = df[df['STATUS'] == 'ATIVO']
+contagem_hospitais = {col: (df_ativos[col] == 'S').sum() for col in hospital_cols}
 df_hospitais_contagem = pd.DataFrame.from_dict(contagem_hospitais, orient='index', columns=['Qtd'])
 st.bar_chart(df_hospitais_contagem)
 
-# Lista de pessoas por hospital
-st.subheader("Pessoas por Hospital")
+# Médicos por hospital selecionado
+st.subheader("👩‍⚕️ Médicos por Hospital")
 hospital_escolhido = st.selectbox("Escolha um hospital", options=hospital_cols)
-df_hospital_pessoas = df[df[hospital_escolhido] == 'S'][['NOME', 'CRM', 'STATUS', 'INSS']]
-st.dataframe(df_hospital_pessoas)
+df_hosp = df[df[hospital_escolhido] == 'S'][['NOME', 'CRM', 'STATUS', 'INSS']]
+st.dataframe(df_hosp)
 
-# Mostrar apenas os NOVOS cadastros
-st.subheader("Novos cadastros")
+# Novos cadastros
+st.subheader("🆕 Novos Cadastros")
 novos = df[df['CONTRATO'].str.upper().str.contains("ENTRADA") | (df['ASSINOU SAIDA'].str.strip() == "")]
 st.dataframe(novos[['NOME', 'CRM', 'STATUS', 'INSS', 'CONTRATO']])
 
-# Baixar CSV filtrado
-st.download_button("📥 Baixar CSV Filtrado", df_filtrado.to_csv(index=False).encode('utf-8'), "dados_filtrados.csv", "text/csv")
+# Valores recebidos (se disponível)
+if "VALOR RECEBIDO" in df.columns:
+    st.subheader("💰 Médicos com Valores Recebidos")
+    df_recebimentos = df_filtrado[df_filtrado['VALOR RECEBIDO'].notna()]
+    df_recebimentos = df_recebimentos[['NOME', 'CRM', 'VALOR RECEBIDO']]
+    df_recebimentos['VALOR RECEBIDO'] = pd.to_numeric(df_recebimentos['VALOR RECEBIDO'], errors='coerce')
+    df_recebimentos = df_recebimentos.dropna(subset=['VALOR RECEBIDO'])
+    st.dataframe(df_recebimentos)
+    total_recebido = df_recebimentos['VALOR RECEBIDO'].sum()
+    st.metric("💵 Total Recebido (filtrado)", f"R$ {total_recebido:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+
+# Botão de download
+st.download_button(
+    "📥 Baixar CSV Filtrado",
+    df_filtrado.to_csv(index=False).encode('utf-8'),
+    "dados_filtrados.csv",
+    "text/csv"
+)
